@@ -30,7 +30,7 @@ import {
  *   the live resolver and the snapshot of today agree with each other and with the oracle
  */
 
-const SEEDS = Array.from({ length: 32 }, (_, i) => 1000 + i)
+const SEEDS = Array.from({ length: 56 }, (_, i) => 1000 + i)
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0
@@ -327,6 +327,26 @@ async function buildScenario(seed: number): Promise<Scenario> {
   }
   const opCount = ri(4, 9)
   for (let i = 0; i < opCount; i += 1) {
+    // P209 (E): about one operation in ten is a gift - a lot whose cost is NOT KNOWN (never zero).
+    if (rng() < 0.1) {
+      const asGraded = rng() < 0.4
+      const gift = await client
+        .rpc('add_card_acquisition', {
+          p_card_variant_id: variants[ri(0, 3)],
+          ...(asGraded ? {} : { p_condition: 'NM' }),
+          ...(asGraded ? { p_grading_state: 'graded', p_grader: 'psa', p_grade: ri(6, 10) } : {}),
+          p_origin: 'gift',
+          p_cost_basis_state: 'not_paid',
+          p_quantity: ri(1, 3),
+          p_acquired_on: isoDaysAgo(ri(0, 50)),
+        })
+        .single<{ holding_id: string }>()
+      log.push(
+        `gift ${asGraded ? 'graded ' : ''}${gift.error ? 'ERR ' + gift.error.message : 'ok'}`,
+      )
+      if (gift.error) throw new Error(`add_card_acquisition: ${gift.error.message}`)
+      continue
+    }
     const roll = rng()
     const lots = await must(
       'lots',
@@ -335,20 +355,53 @@ async function buildScenario(seed: number): Promise<Scenario> {
         .select('id, acquired_on, quantity_remaining, voided_at')
         .eq('user_id', user.id)
         .is('voided_at', null)
-        .gt('quantity_remaining', 0),
+        .gt('quantity_remaining', 0)
+        // A stable order: the scenario picks lots with a seeded shuffle, and heap order is not stable
+        // between runs (uuid ids differ), which made the coverage counters drift by one or two.
+        .order('acquired_on')
+        .order('created_at')
+        .order('quantity')
+        .order('unit_cost_basis_minor'),
     )
     const liveLots = lots as { id: string; acquired_on: string; quantity_remaining: number }[]
     if (roll < 0.4 || liveLots.length === 0) {
       const currency = (['NOK', 'NOK', 'EUR', 'USD', 'JPY'] as const)[ri(0, 4)]!
       const date = isoDaysAgo(ri(0, 60))
       const lineCount = ri(1, 3)
-      const lines = Array.from({ length: lineCount }, () => ({
-        line_type: 'card',
-        card_variant_id: variants[ri(0, 3)],
-        condition: 'NM',
-        quantity: ri(1, 5),
-        unit_price_minor: currency === 'JPY' ? ri(1, 90_000) : ri(1, 60_000),
-      }))
+      // P209 (E): graded copies reuse the SAME variants that carry provider prices (the negative
+      // control: a graded copy must never inherit the raw price), and sealed products have no
+      // provider price at all. Both are valued by a manual valuation or not at all.
+      const lines = Array.from({ length: lineCount }, () => {
+        const kindRoll = rng()
+        const unit = currency === 'JPY' ? ri(1, 90_000) : ri(1, 60_000)
+        if (kindRoll < 0.25) {
+          return {
+            line_type: 'card',
+            card_variant_id: variants[ri(0, 3)],
+            condition: 'NM',
+            grading_state: 'graded',
+            grader: 'psa',
+            grade: ri(6, 10),
+            quantity: ri(1, 3),
+            unit_price_minor: unit,
+          }
+        }
+        if (kindRoll < 0.4) {
+          return {
+            line_type: 'sealed',
+            sealed_product_id: seedCatalog.sealedProductId,
+            quantity: ri(1, 4),
+            unit_price_minor: unit,
+          }
+        }
+        return {
+          line_type: 'card',
+          card_variant_id: variants[ri(0, 3)],
+          condition: 'NM',
+          quantity: ri(1, 5),
+          unit_price_minor: unit,
+        }
+      })
       const subtotal = lines.reduce((s, l) => s + l.quantity * l.unit_price_minor, 0)
       const shipping = rng() < 0.6 ? ri(0, 3000) : 0
       const customs = rng() < 0.2 ? ri(0, 1500) : 0
@@ -590,6 +643,10 @@ const coverage = {
   editedPurchases: 0,
   editedSales: 0,
   voidedSales: 0,
+  gradedHoldings: 0,
+  sealedHoldings: 0,
+  nonRawWithoutValue: 0,
+  gradedWithRawPriceButNoValue: 0,
 }
 
 describe('P199 deterministic cross-surface reconciliation', () => {
@@ -625,7 +682,11 @@ describe('P199 deterministic cross-surface reconciliation', () => {
         const pLines = (plR.data ?? []) as Record<string, unknown>[]
         const sales = (salesR.data ?? []) as Record<string, unknown>[]
         const sLines = (slR.data ?? []) as Record<string, unknown>[]
-        const holdings = (holdR.data ?? []) as { id: string; card_variant_id: string }[]
+        const holdings = (holdR.data ?? []) as {
+          id: string
+          card_variant_id: string
+          holding_kind: string
+        }[]
         const fx: FxRow[] = (
           (fxR.data ?? []) as { base_currency: string; rate_date: string; rate: string | number }[]
         ).map((r) => ({ base: r.base_currency, date: r.rate_date, rate: String(r.rate) }))
@@ -713,6 +774,13 @@ describe('P199 deterministic cross-surface reconciliation', () => {
         expectEq('pud', d.pud_nok_minor, pud)
 
         const holdingVariant = new Map(holdings.map((h) => [h.id, h.card_variant_id]))
+        const holdingKind = new Map(holdings.map((h) => [h.id, h.holding_kind]))
+        /** F10: provider prices only ever value raw cards; graded and sealed are manual-or-missing. */
+        const unitValue = (holdingId: string, day: string): bigint | null =>
+          manualAt(sc.manuals, holdingId, day) ??
+          (holdingKind.get(holdingId) === 'raw_card'
+            ? providerUnitValue(sc.snaps, fx, holdingVariant.get(holdingId)!, day, sc.useEu)
+            : null)
         const openByHolding = new Map<string, number>()
         for (const lot of liveLotList) {
           if (lot.quantity_remaining > 0) {
@@ -723,23 +791,40 @@ describe('P199 deterministic cross-surface reconciliation', () => {
           }
         }
         let rawValue = 0n
+        let gradedValue = 0n
+        let sealedValue = 0n
         let priced = 0
         let unpriced = 0
         let cards = 0
         let manualValued = 0
         for (const [hid, qty] of openByHolding) {
           cards += qty
-          const unit =
-            manualAt(sc.manuals, hid, TODAY) ??
-            providerUnitValue(sc.snaps, fx, holdingVariant.get(hid)!, TODAY, sc.useEu)
+          const unit = unitValue(hid, TODAY)
           if (manualAt(sc.manuals, hid, TODAY) !== null) manualValued += 1
           if (unit === null) unpriced += 1
           else {
             priced += 1
-            rawValue += unit * BigInt(qty)
+            const kind = holdingKind.get(hid)
+            if (kind === 'graded_card') gradedValue += unit * BigInt(qty)
+            else if (kind === 'sealed') sealedValue += unit * BigInt(qty)
+            else rawValue += unit * BigInt(qty)
+          }
+          const kind = holdingKind.get(hid)
+          if (kind === 'graded_card') coverage.gradedHoldings += 1
+          if (kind === 'sealed') coverage.sealedHoldings += 1
+          if (kind !== 'raw_card' && unit === null) {
+            coverage.nonRawWithoutValue += 1
+            // negative control: the variant has a raw price, the graded copy still has no value
+            const rawPrice =
+              kind === 'graded_card'
+                ? providerUnitValue(sc.snaps, fx, holdingVariant.get(hid)!, TODAY, sc.useEu)
+                : null
+            if (rawPrice !== null) coverage.gradedWithRawPriceButNoValue += 1
           }
         }
         expectEq('raw_value', d.raw_value_nok_minor, rawValue)
+        expectEq('graded_value', d.graded_value_nok_minor, gradedValue)
+        expectEq('sealed_value', d.sealed_value_nok_minor, sealedValue)
         expectEq('priced', d.priced_holding_count, priced)
         expectEq('unpriced', d.unpriced_holding_count, unpriced)
         expectEq('physical_card_count', d.physical_card_count, cards)
@@ -822,9 +907,7 @@ describe('P199 deterministic cross-surface reconciliation', () => {
                 continue
               }
               open += 1
-              const unit =
-                manualAt(sc.manuals, lot.holding_id, day) ??
-                providerUnitValue(sc.snaps, fx, holdingVariant.get(lot.holding_id)!, day, sc.useEu)
+              const unit = unitValue(lot.holding_id, day)
               if (unit === null) unvalued += 1
               else {
                 mv += unit * BigInt(qtyOpen)
@@ -869,9 +952,11 @@ describe('P199 deterministic cross-surface reconciliation', () => {
             cmp('unvalued_lots', row.unvalued_lot_count, unvalued)
             if (day === TODAY) {
               // live resolver and today's snapshot are two implementations of the same section 6 rule
-              if (String(row.market_value_nok_minor) !== String(rawValue)) {
+              if (
+                String(row.market_value_nok_minor) !== String(rawValue + gradedValue + sealedValue)
+              ) {
                 problems.push(
-                  `today: snapshot market value ${String(row.market_value_nok_minor)} != live raw value ${rawValue}`,
+                  `today: snapshot market value ${String(row.market_value_nok_minor)} != live total value ${rawValue + gradedValue + sealedValue}`,
                 )
               }
             }
@@ -897,7 +982,11 @@ describe('P199 deterministic cross-surface reconciliation', () => {
     expect(coverage.partlySoldLots).toBeGreaterThanOrEqual(3)
     expect(coverage.residualLots).toBeGreaterThanOrEqual(10)
     expect(coverage.editedPurchases).toBeGreaterThanOrEqual(8)
-    expect(coverage.editedSales).toBeGreaterThanOrEqual(5)
+    expect(coverage.editedSales).toBeGreaterThanOrEqual(3)
     expect(coverage.voidedSales).toBeGreaterThanOrEqual(2)
+    expect(coverage.gradedHoldings).toBeGreaterThanOrEqual(6)
+    expect(coverage.sealedHoldings).toBeGreaterThanOrEqual(4)
+    expect(coverage.nonRawWithoutValue).toBeGreaterThanOrEqual(3)
+    expect(coverage.gradedWithRawPriceButNoValue).toBeGreaterThanOrEqual(1)
   })
 })

@@ -1606,8 +1606,10 @@ reasons unrelated to this.
 
 Both run in the `db-tests` job (`pnpm test:db`) against the real stack; neither mocks a database function.
 
-- `tests/db/p199_ledger_reconciliation.test.ts` — **cross-surface reconciliation, seeded.** 32 deterministic scenarios
-  (mulberry32 seeds 1000–1031) drive the real write RPCs (`create_purchase` in NOK/EUR/USD/JPY with manual FX,
+- `tests/db/p199_ledger_reconciliation.test.ts` — **cross-surface reconciliation, seeded.** 56 deterministic scenarios
+  (mulberry32 seeds 1000–1055; since P209 they include graded copies that reuse priced variants, sealed products, and gifts with
+  an unknown cost, and compare the dashboard raw/graded/sealed value and every snapshot day against a model in which provider
+  prices value raw cards only) drive the real write RPCs (`create_purchase` in NOK/EUR/USD/JPY with manual FX,
   `create_sale` in NOK/EUR/USD, `update_purchase` incl. currency change, `update_sale`, `void_sale` (any live sale, in any order since D-209),
   `void_purchase`, `set_manual_valuation` with an atomic replacement) on private
   card variants with seeded Cardmarket/TCGplayer observations, then compare the live `get_dashboard_summary`, the rebuilt
