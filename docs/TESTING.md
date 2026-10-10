@@ -1645,3 +1645,8 @@ assertion message carries the operation log of that seed.
   that graded/sealed never use a raw price.
 - `tests/ui/home-value-basis.test.ts` — the UI side: the copy for each state, the wire row -> typed summary mapping, and the
   rendered block (text and accessible name) for a mixed account.
+- `tests/db/p209_date_currency_boundaries.test.ts` — D-212. BUG cases (month window follows the supplied local date;
+  `sales_summary` components reconcile to NSP), FACT cases (first/last day of a month, bars sum to GPO, `p_as_of` refused
+  beyond one day, JPY exponent 0 and frozen NOK), and POLICY pins for the open questions (sale before acquisition, future-dated
+  manual valuation). The month-rollover case needs the database date to be the last day of a month and otherwise asserts the
+  refusal path; `tests/data/monthly-spend-local-date.test.ts` covers the client sending the local date at 00:30 on the 1st.

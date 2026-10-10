@@ -7356,3 +7356,37 @@ missing in that case (`livePortfolioValue`).
 return type gains columns at the end). **Production requirement:** after `20261009170000`. Client and database must ship
 together within a release: an older client ignores the new columns, a newer client against an older database reads them as
 undefined and prints `NaN` — release order is database first (already the owner's order: backup, db push, deploy).
+
+## D-212 — Date and currency boundaries: two defects fixed, four policy questions left open on purpose (P209)
+
+**2026-10-10 · Accepted**
+
+**Fixed (genuine inconsistencies with documented behaviour).**
+1. *Monthly spend followed the database's UTC date.* `get_monthly_spend` built its window from `current_date`. In the first
+   one or two local hours of a month a Norwegian owner is already in the new month while the database is not, so a purchase
+   dated the 1st (valid: P144 allows UTC today + 1) fell in no bar and the bars summed to less than the spend printed beside
+   them. A new two-argument overload takes `p_as_of` (the owner's local date, refused unless within one day of the database date)
+   and the client sends `localTodayIso()`; the one-argument function is unchanged (the privilege baselines that tests re-apply
+   name it, and an overload without defaults is never ambiguous for PostgREST). Migration `20261009190000`.
+2. *sales_summary components did not reconcile to NSP.* Each of gross, fees and shipping was converted on its own while NSP
+   is a frozen per-sale figure, so `SGP − SF − OSC + SCB` could differ from NSP by a minor unit (3 gross, 1 fee, 1 shipping at 0.5
+   NOK: 0 against 1). The gross is now the figure that makes the identity hold per sale. Nothing rendered the components; the
+   contract is what changed. Migration `20261009200000`.
+
+**Already correct, now asserted.** A JPY purchase freezes exact NOK minor units (exponent 0) and a later rate row never moves
+a frozen value; purchases on the last and first day of a month fall in their own bars and the bars sum to GPO; a `p_as_of`
+beyond one day is refused, never reinterpreted.
+
+**Open policy questions (pinned by tests, not decided here — planning is frozen).**
+- **P1** A sale dated before the lot's `acquired_on` is accepted. History then shows proceeds before any ownership. Options:
+  refuse (with a legacy carve-out as F16), or accept and let the lot's tracked-from date move earlier. Recommended: refuse.
+- **P2** A manual valuation with `effective_from` in the future is the *current* value in live reads and is ignored by history
+  until its date, so Home's headline and the chart disagree for that period. Options: ignore future-dated valuations in live
+  reads (matches history), or refuse a future date at write. The UI never sends one, so only API callers are affected.
+- **P5** An FX rate years older than the observation it converts is used silently (the resolver takes the latest rate on or
+  before the date, with no maximum age). Options: a maximum age that turns the price into `missing` (honest, can blank a
+  portfolio after an Norges Bank outage), or a visible "converted with a rate from <date>" marker.
+- **P6** `get_market_movers` shows the provider movement of a card that has a manual valuation. Options: exclude manually
+  valued holdings, or label the row as provider movement.
+
+**Consequences.** Two migrations after D-211's. The grant-audit baseline lists `get_monthly_spend(integer)` and `get_monthly_spend(integer, date)`.

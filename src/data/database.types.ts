@@ -2241,7 +2241,7 @@ export type Database = {
         }[]
       }
       get_monthly_spend: {
-        Args: { p_months?: number }
+        Args: { p_as_of: string; p_months: number } | { p_months?: number }
         Returns: {
           collectible_nok_minor: string
           hobby_nok_minor: string
