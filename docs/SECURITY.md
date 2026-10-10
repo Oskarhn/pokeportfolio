@@ -992,6 +992,8 @@ Stated explicitly rather than left implicit:
 
 ---
 
+**Audit record.** The P200 authorization, session and tooling audit, its findings and the owner decisions it left open (GitHub secret scanning and push protection, a production deploy environment, JWT expiry, last-administrator deletion, array bounds, Cloudflare auto-deploy) are in `docs/security/P200_SECURITY_REVIEW.md`.
+
 ## 12. Security checklist per milestone
 
 Every milestone that adds a table or an endpoint must confirm:

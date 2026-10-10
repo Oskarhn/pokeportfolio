@@ -472,6 +472,8 @@ For every user-private table:
 | A enumerates `profiles` | Only own row |
 | A reads B's Storage objects | Denied (once storage exists) |
 
+**P200/P206 (`tests/authorization/p200_cross_tenant_matrix.test.ts`, `p200_sessions.test.ts`).** Catalog-driven: every public table must be RLS-enabled and classified (user-owned, shared, or server-only), the browser-callable function set must equal a reviewed list, and every `SECURITY DEFINER` function must pin an empty `search_path`; a new table or RPC fails the file until it is classified. A table that a migration still waiting to merge adds (P201's `price_sync_attempts`) is listed in `PENDING_SERVER_ONLY_TABLES`, so the file is green with and without it. The session file pins the known property that an issued access token works until it expires; an expiry case that cannot isolate expiry is reported as skipped, never as passed. Findings and owner decisions: `docs/security/P200_SECURITY_REVIEW.md`.
+
 Plus invite-only enforcement (`tests/authorization/invite_only.test.ts`). Every row here is a
 named test, and the ones that matter most are the ones a weaker design would pass:
 
