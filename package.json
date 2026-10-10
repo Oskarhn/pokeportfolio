@@ -110,7 +110,9 @@
       "sharp"
     ],
     "overrides": {
-      "adm-zip": "^0.6.1"
+      "adm-zip": "^0.6.1",
+      "seroval": "^1.6.3",
+      "source-map-js": "^1.2.2"
     }
   }
 }
