@@ -3,7 +3,12 @@ import { useQuery } from '@tanstack/react-query'
 import { formatCurrencyMinor, formatNokMinor } from '../../ui/money-format'
 import { getLatestFxRatesToNok } from '../../data/fx'
 import { convertNokToDisplayCurrency } from '../../domain/fx'
-import { holdingValueDisplayState, monthlySpendBars } from '../../domain/dashboard'
+import {
+  holdingValueDisplayState,
+  monthlySpendBars,
+  valueBasisLines,
+  type ValueBasisInput,
+} from '../../domain/dashboard'
 import { CardImage } from '../catalog/CardImage'
 import { portfolioDisplayName, portfolioSubtitle } from '../../data/portfolio'
 import type { PortfolioTile } from '../../data/portfolio'
@@ -36,36 +41,20 @@ export function StatTile({
   )
 }
 
-/** Data quality directly beneath the headline (UX_FLOWS.md F10, prompt §80): priced vs not,
- *  manual vs automatic, uncosted lots. Counts are harmless to show when values are hidden. */
-export function DataQualityRow({
-  priced,
-  unpriced,
-  manualValued,
-  autoPriced,
-  uncostedLots,
-}: {
-  priced: number
-  unpriced: number
-  manualValued: number
-  autoPriced: number
-  uncostedLots: number
-}) {
+/** Data quality directly beneath the headline (UX_FLOWS.md F10, prompt §80; E9 / D-211): priced
+ *  vs not, how old the prices are, manual vs automatic, zero values, uncosted lots. Plain text
+ *  lines from the domain, so the same sentences are the accessible description of the figure.
+ *  Counts are harmless to show when values are hidden. */
+export function DataQualityRow(props: ValueBasisInput) {
+  const lines = valueBasisLines(props)
   return (
-    <div className="space-y-0.5 border-t border-slate-800 pt-3 text-xs text-slate-500">
-      <p>
-        {priced.toLocaleString('nb-NO')} priced
-        {unpriced > 0 ? ` · ${unpriced.toLocaleString('nb-NO')} without a price` : ''}
-      </p>
-      {(manualValued > 0 || autoPriced > 0) && (
-        <p>
-          {autoPriced.toLocaleString('nb-NO')} automatic
-          {manualValued > 0 ? ` · ${manualValued.toLocaleString('nb-NO')} manual` : ''}
-        </p>
-      )}
-      {uncostedLots > 0 && (
-        <p>{uncostedLots.toLocaleString('nb-NO')} lots without a recorded cost</p>
-      )}
+    <div
+      className="space-y-0.5 border-t border-slate-800 pt-3 text-xs text-slate-500"
+      aria-label="What the current value is based on"
+    >
+      {lines.map((line) => (
+        <p key={line}>{line}</p>
+      ))}
     </div>
   )
 }

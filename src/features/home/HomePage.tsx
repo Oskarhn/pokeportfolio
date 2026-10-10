@@ -373,8 +373,12 @@ export function HomePage() {
           <DataQualityRow
             priced={s.pricedHoldingCount}
             unpriced={s.unpricedHoldingCount}
+            unpricedManualOnly={s.unpricedManualOnlyHoldingCount}
             manualValued={s.manualValuedHoldingCount}
             autoPriced={s.autoPricedHoldingCount}
+            stalePriced={s.stalePricedHoldingCount}
+            oldestPriceDate={s.oldestPriceDate}
+            zeroValued={s.zeroValuedHoldingCount}
             uncostedLots={s.uncostedOpenLotCount}
           />
         ) : null}

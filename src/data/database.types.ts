@@ -2180,6 +2180,7 @@ export type Database = {
           market_value_nok_minor: string | null
           ncco_nok_minor: string
           nsp_nok_minor: string
+          oldest_price_date: string | null
           pending_recompute: boolean
           physical_card_count: string
           priced_holding_count: string
@@ -2192,6 +2193,7 @@ export type Database = {
           sales_proceeds_to_date_nok_minor: string | null
           snapshot_open_lot_count: string | null
           snapshot_unvalued_lot_count: string | null
+          stale_priced_holding_count: string
           thco_nok_minor: string
           thp_nok_minor: string | null
           ttep_nok_minor: string | null
@@ -2199,6 +2201,8 @@ export type Database = {
           uncosted_open_lot_count: string
           unrealized_result_nok_minor: string | null
           unpriced_holding_count: string
+          unpriced_manual_only_holding_count: string
+          zero_valued_holding_count: string
         }[]
       }
       get_holding_value_provenance: {

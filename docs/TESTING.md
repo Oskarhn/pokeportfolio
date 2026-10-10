@@ -1639,3 +1639,9 @@ assertion message carries the operation log of that seed.
   back; two holdings that each fit and whose sum does not (> 2^63) return exact text from the dashboard, counts and snapshot.
   One synthetic account per test (holdings of one card consolidate). A valuation is read back as text: a JSON number above
   2^53 rounds (M3).
+- `tests/db/p209_dashboard_price_disclosure.test.ts` — the RPC side of D-211: fresh, stale (12 days), expired (40 days) and a
+  real zero observation on private variants, a graded copy of a priced variant and a sealed product with and without a
+  manual 0. Asserts the four disclosure columns, that the dashboard raw value equals the sum of the priced Portfolio rows, and
+  that graded/sealed never use a raw price.
+- `tests/ui/home-value-basis.test.ts` — the UI side: the copy for each state, the wire row -> typed summary mapping, and the
+  rendered block (text and accessible name) for a mixed account.
