@@ -2562,3 +2562,10 @@ behaviours nobody had decided (a sale before the purchase, a future-dated valuat
 valued cards) and were pinned instead, each with its options, because a pin turns a later change into a decision. The one
 that was only a boundary-day effect had to be tested with a conditional case plus a client test faking the local clock:
 the honest statement is that a test that can only fire one day a month is partly a code review. D-212.
+
+## 2026-10-10 — Duplicated arithmetic that happened to agree (P209)
+
+Five components each rebuilt the sale or purchase preview with the same three lines of bigint arithmetic and all of them were
+right. That is the situation in which a rule gets violated without anyone noticing: there is no failing test to point at. The
+cure was not a lint rule but one function per preview and a parity test against the stored rows; then a fixed formula cannot be
+forgotten in a fifth place, and a changed one fails in one place. D-213.

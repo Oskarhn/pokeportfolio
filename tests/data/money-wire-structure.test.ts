@@ -77,11 +77,11 @@ describe('S2 — the only Number(<money>) left in src is display-only, and is na
   const ALLOWED: Record<string, { count: number; why: string }> = {
     'src/domain/dashboard.ts': {
       count: 4,
-      why: 'chartMajorUnits (a chart coordinate), the period-change percentage and the 0-100 bar ratios',
+      why: 'chartMajorUnits (a chart coordinate), the display percentage of valueChange (D-213) and the 0-100 bar ratios',
     },
     'src/ui/PriceHistoryChart.tsx': {
-      count: 4,
-      why: 'SVG polyline geometry and the percentage label on the price history sparkline',
+      count: 2,
+      why: 'SVG polyline geometry on the price history sparkline (the change and its percentage come from valueChange, D-213)',
     },
   }
 

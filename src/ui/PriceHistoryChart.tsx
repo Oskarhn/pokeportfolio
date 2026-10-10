@@ -1,4 +1,5 @@
 import { formatNokMinor } from './money-format'
+import { valueChange } from '../domain/dashboard'
 import type { PriceHistoryPoint } from '../data/pricing'
 
 /**
@@ -52,9 +53,7 @@ export function PriceHistoryChart({ points }: { points: PriceHistoryPoint[] }) {
   const first = points[0]
   const last = points[points.length - 1]
   if (!first || !last) return null
-  const changeMinor = last.valueNokMinor - first.valueNokMinor
-  const changePct =
-    first.valueNokMinor !== 0n ? (Number(changeMinor) / Number(first.valueNokMinor)) * 100 : null
+  const { changeMinor, pct: changePct } = valueChange(first.valueNokMinor, last.valueNokMinor)
 
   return (
     <div className="space-y-1.5 rounded-xl border border-slate-800 p-2">

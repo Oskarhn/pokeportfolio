@@ -7390,3 +7390,21 @@ beyond one day is refused, never reinterpreted.
   valued holdings, or label the row as provider movement.
 
 **Consequences.** Two migrations after D-211's. The grant-audit baseline lists `get_monthly_spend(integer)` and `get_monthly_spend(integer, date)`.
+
+## D-213 — Form previews and value changes are domain functions; components format (P209)
+
+**2026-10-10 · Accepted**
+
+**Context.** The rule is "no monetary arithmetic outside `src/domain/`". The sale builder, the sale editor and the purchase
+record and edit forms each computed their live preview inline (`unit * BigInt(quantity)`, sums, `gross - fees - shipping +
+charged`, a sign flip in JSX), and Card Detail's price chart subtracted two values and divided two doubles. The results agreed
+with the server, so nothing was wrong today; the next change to the formula would have had five places to forget.
+
+**Decision.** `previewSale` (`src/domain/sales.ts`), `previewPurchase` (`src/domain/allocation.ts`) and `valueChange`
+(`src/domain/dashboard.ts`, also used by `computePeriodChange`) own the arithmetic; the four forms and the chart call them and
+format. `tests/db/p209_preview_parity.test.ts` proves the previews equal the rows `create_purchase` and `create_sale` store
+(12 seeds each), so a component can only show what will be stored. `valueChange` returns a null percentage for a zero base.
+
+**Left, deliberately.** Plot geometry and the "%" label take `Number()` of a bigint (non-authoritative display values, D-137);
+`HoldingDetailPage`'s lot-cost summation is corrected in P199 C (#136) via `src/domain/cost-basis.ts`, which this change does not
+touch; scanner confidence arithmetic is not money.

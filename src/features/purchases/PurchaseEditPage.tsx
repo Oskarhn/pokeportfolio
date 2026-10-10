@@ -12,7 +12,7 @@ import {
 } from '../../data/purchases'
 import { listRetailers } from '../../data/retailers'
 import { toDecimalString } from '../../domain/money'
-import { allocatePurchaseCharges } from '../../domain/allocation'
+import { previewPurchase } from '../../domain/allocation'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import {
@@ -132,21 +132,25 @@ function PurchaseEditForm({ purchaseId, detail }: { purchaseId: string; detail: 
       const shipping = parseOptionalChargeInput(shippingInput, currency)
       const customs = parseOptionalChargeInput(customsInput, currency)
       const discount = parseOptionalChargeInput(discountInput, currency)
-      const weights: bigint[] = []
+      const previewLines: { unitPriceMinor: bigint; quantity: number }[] = []
       for (const line of editLines) {
-        const qty = BigInt(Math.max(1, Number.parseInt(line.quantity || '1', 10)))
+        const quantity = Math.max(1, Number.parseInt(line.quantity || '1', 10))
         const unit = parseNullableMoneyInput(line.unitPrice, currency)
         if (unit === null) return null
-        weights.push(unit * qty)
+        previewLines.push({ unitPriceMinor: unit, quantity })
       }
-      if (weights.length === 0) return null
-      const charges = allocatePurchaseCharges(weights, shipping, customs, discount)
-      const total = weights.reduce((a, b) => a + b, 0n) + shipping + customs - discount
+      if (previewLines.length === 0) return null
+      const result = previewPurchase({
+        lines: previewLines,
+        shippingMinor: shipping,
+        customsMinor: customs,
+        discountMinor: discount,
+      })
       return {
-        total,
+        total: result.totalMinor,
         lines: editLines.map((line, i) => ({
           label: line.label,
-          attributable: at(charges.attributable, i),
+          attributable: at(result.attributable, i),
         })),
       }
     } catch {

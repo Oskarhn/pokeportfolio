@@ -4,6 +4,7 @@
  * result — its `costBasisAtSale` is `null`, and PUD (not RRC) is where its
  * money is counted. Invariant F5 ties the two paths back together.
  */
+import { allocate } from './allocation'
 import { add, subtract, sum, type Money } from './money'
 import type { CurrencyCode } from './currency'
 
@@ -86,4 +87,54 @@ export function saleLineNetProceeds(
     subtract(subtract(lineGross, allocatedFees), allocatedShipping),
     allocatedShippingCharged,
   )
+}
+
+export interface SalePreviewInput {
+  /** One entry per sold lot: the unit sale price in minor units and the integer quantity. */
+  readonly lines: readonly { readonly unitGrossMinor: bigint; readonly quantity: number }[]
+  readonly feesMinor: bigint
+  readonly shippingCostMinor: bigint
+  readonly shippingChargedMinor: bigint
+}
+
+export interface SalePreview {
+  readonly lineGross: bigint[]
+  readonly grossMinor: bigint
+  readonly feesMinor: bigint
+  readonly shippingCostMinor: bigint
+  readonly shippingChargedMinor: bigint
+  /** The same amounts with the sign they carry in the net: fees and shipping cost are deductions. */
+  readonly feesDeductionMinor: bigint
+  readonly shippingCostDeductionMinor: bigint
+  readonly netMinor: bigint
+  /** Per line: gross − allocated fees − allocated shipping + allocated buyer shipping. */
+  readonly lineNet: bigint[]
+}
+
+/**
+ * The sale builder's and the sale editor's live preview, in the sale's own currency: the same
+ * arithmetic create_sale freezes (FINANCIAL_MODEL.md §4.5). Sale-level charges are allocated across
+ * the lines by line gross with the largest-remainder rule (§4.2), so Σ line net = net exactly.
+ * Components format these numbers; they never compute them.
+ */
+export function previewSale(input: SalePreviewInput): SalePreview {
+  const lineGross = input.lines.map((l) => l.unitGrossMinor * BigInt(l.quantity))
+  const grossMinor = lineGross.reduce((a, b) => a + b, 0n)
+  const allocFees = allocate(input.feesMinor, lineGross)
+  const allocShip = allocate(input.shippingCostMinor, lineGross)
+  const allocCharged = allocate(input.shippingChargedMinor, lineGross)
+  const lineNet = lineGross.map(
+    (g, i) => g - (allocFees[i] ?? 0n) - (allocShip[i] ?? 0n) + (allocCharged[i] ?? 0n),
+  )
+  return {
+    lineGross,
+    grossMinor,
+    feesMinor: input.feesMinor,
+    shippingCostMinor: input.shippingCostMinor,
+    shippingChargedMinor: input.shippingChargedMinor,
+    feesDeductionMinor: -input.feesMinor,
+    shippingCostDeductionMinor: -input.shippingCostMinor,
+    netMinor: grossMinor - input.feesMinor - input.shippingCostMinor + input.shippingChargedMinor,
+    lineNet,
+  }
 }

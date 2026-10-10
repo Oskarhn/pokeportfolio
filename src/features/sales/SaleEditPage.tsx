@@ -11,6 +11,7 @@ import {
 import { fetchFxRate } from '../../data/fx'
 import { leasedDb } from '../../data/leased-db'
 import { useLeasedAction } from '../../auth/useLeasedMutation'
+import { previewSale } from '../../domain/sales'
 import { toDecimalString } from '../../domain/money'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, TextField } from '../../ui/form'
@@ -120,16 +121,18 @@ function SaleEditForm({ saleId, sale, lines }: { saleId: string; sale: Sale; lin
     try {
       // A blank sale PRICE is an unknown amount, not a free sale: the preview waits for it
       // (P130-25). Blank fees/shipping mean no such charge.
-      let gross = 0n
+      const previewLines: { unitGrossMinor: bigint; quantity: number }[] = []
       for (const l of lines) {
         const unit = parseNullableMoneyInput(lineInputs[l.id] ?? '', currency)
         if (unit === null) return null
-        gross += unit * BigInt(l.quantity)
+        previewLines.push({ unitGrossMinor: unit, quantity: l.quantity })
       }
-      const fees = parseOptionalChargeInput(feesInput, currency)
-      const ship = parseOptionalChargeInput(shippingCostInput, currency)
-      const shipCharged = parseOptionalChargeInput(shippingChargedInput, currency)
-      return gross - fees - ship + shipCharged
+      return previewSale({
+        lines: previewLines,
+        feesMinor: parseOptionalChargeInput(feesInput, currency),
+        shippingCostMinor: parseOptionalChargeInput(shippingCostInput, currency),
+        shippingChargedMinor: parseOptionalChargeInput(shippingChargedInput, currency),
+      }).netMinor
     } catch {
       return null
     }
