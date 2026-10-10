@@ -261,6 +261,16 @@ select jsonb_build_object(
     select count(*) from public.acquisition_lots
     where abs(coalesce(unit_cost_basis_minor, 0)) > 9007199254740991
        or abs(coalesce(unit_cost_basis_nok_minor, 0)) > 9007199254740991),
+  -- D-210: a holding whose unit manual value x live copies exceeds the signed bigint range. New writes that
+  -- would create one are refused; a non-zero count is a row written before the rule.
+  'holdings_value_out_of_range', (
+    select count(*) from (
+      select mv.holding_id
+      from public.manual_valuations mv
+      join public.acquisition_lots l on l.holding_id = mv.holding_id and l.voided_at is null
+      where mv.superseded_at is null
+      group by mv.holding_id, mv.value_nok_minor
+      having mv.value_nok_minor::numeric * sum(l.quantity_remaining) > 9223372036854775807) x),
   'residual_double_carried_lots', (
     select count(*) from (
       select ld.lot_id

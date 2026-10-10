@@ -1630,3 +1630,10 @@ Both run in the `db-tests` job (`pnpm test:db`) against the real stack; neither 
 
 To reproduce a failing seed: `pnpm exec vitest run --config vitest.db.config.ts p199_ledger_reconciliation -t "seed 1007"`; the
 assertion message carries the operation log of that seed.
+
+- `tests/db/p209_value_range.test.ts` — **one range invariant for money (D-210).** A holding at the edge (unit = floor(MAX / 2),
+  two copies) reads exactly through the dashboard, counts, list, provenance and the snapshot history; one minor unit more per
+  copy is refused with 22003 and leaves the valuation untouched; adding copies that would exceed the range rolls the purchase
+  back; two holdings that each fit and whose sum does not (> 2^63) return exact text from the dashboard, counts and snapshot.
+  One synthetic account per test (holdings of one card consolidate). A valuation is read back as text: a JSON number above
+  2^53 rounds (M3).
