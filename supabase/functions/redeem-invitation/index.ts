@@ -25,6 +25,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.112.3'
 import { checkPassword } from './password.ts'
 import { resolveServiceRoleKey } from '../_shared/service-key.ts'
+import { declaredLengthExceeds, readBoundedText } from '../_shared/bounded-body.ts'
 
 const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') ?? 'http://localhost:5173')
   .split(',')
@@ -57,6 +58,10 @@ function json(request: Request, status: number, body: unknown): Response {
   })
 }
 
+// A valid body is a 43-character token plus a password of at most 72 bytes: well under 1 KiB. This
+// endpoint is public (no JWT), so anything larger is refused before it is buffered or parsed.
+const MAX_BODY_BYTES = 4096
+
 interface RedeemBody {
   token?: unknown
   password?: unknown
@@ -70,9 +75,23 @@ Deno.serve(async (request: Request): Promise<Response> => {
     return json(request, 405, { error: 'method_not_allowed' })
   }
 
+  if (declaredLengthExceeds(request, MAX_BODY_BYTES)) {
+    // Release the body first: answering while a large upload is still in flight can leave the
+    // connection waiting for the client to finish sending (see delete-account).
+    await request.body?.cancel().catch(() => undefined)
+    return json(request, 413, { error: 'bad_request' })
+  }
+
   let body: RedeemBody
   try {
-    body = (await request.json()) as RedeemBody
+    const text = await readBoundedText(request, MAX_BODY_BYTES)
+    if (text === null) return json(request, 413, { error: 'bad_request' })
+    const parsed: unknown = JSON.parse(text)
+    // `null`, a number or an array parses fine and must not reach the property reads below.
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return json(request, 400, { error: 'bad_request' })
+    }
+    body = parsed as RedeemBody
   } catch {
     return json(request, 400, { error: 'bad_request' })
   }

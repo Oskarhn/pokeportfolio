@@ -1322,6 +1322,10 @@ the whole catalog, so both cards would be candidates of every scan (measured: tw
   executed under **Deno** with the provider's HTTP answer and the two database reads controlled (`import_map.json` stubs `npm:@supabase/supabase-js@2.112.3`,
   so a version bump there needs the map updated). The response text is inspected before any parser sees it and then pushed through real clients into the
   real consumers. Needs `deno` on the PATH; **without it those tests are skipped with a warning** (CI has no Deno today), the frozen-wire tests always run.
+**Edge Function request bodies (P206).** `tests/data/p206-redeem-invitation-body.test.ts` + `scripts/p206/redeem-invitation-harness.mjs` run the real
+  `redeem-invitation` code under **Deno** with no database: 413 at exactly 4 KiB + 1 (bytes, not characters), a refused huge `Content-Length`, an endless chunked
+  stream cancelled at the limit, every non-object JSON body a 400, CORS on refusals, and a log capture proving no token or password is written. Skipped, loudly,
+  without `deno` (CI has none); the database-backed half is `tests/authorization/p200_redeem_invitation_hardening.test.ts`.
 - `tests/db/p165_scanner_commit_lease.test.ts` (real controller + real `addCardAcquisition` + production leased client, A → B → A with a lookup in flight,
   an unheard storage rewrite), `tests/db/p165_export_overlap.test.ts` (two exports overlapping in one tab; the last request in flight),
   `tests/ui/p165-read-only-scanner-runtime.test.ts`, `tests/domain/price-check/p165-variant-resolution.test.ts` (126 list shapes).
