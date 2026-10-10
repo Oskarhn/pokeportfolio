@@ -201,3 +201,26 @@ Gates, in order; a failed gate stops the run and nothing is ever re-sent:
 If the Edge Function answers `503 deletion_unavailable` / `deletion_incomplete`, or gives no answer, the
 account may be *pending* (writes blocked, data intact). Do not rerun the tool; diagnose from the stage label
 and the registry head, as in §6. Nothing here recreates or resets the registry to obtain a green result.
+
+### 9.1 Cancelling the tool (Ctrl+C, termination, closed window)
+
+An interruption now says which of three situations the operator is in, prints fixed text only (no id, token,
+address or response content), writes `interrupted`, `deletionRequestSent` and `deleted` to `p197b-result.json`
+and exits with status 130:
+
+| Phase | When | What it means |
+|---|---|---|
+| `before-send` | before gate 7's request left | Nothing was changed: no account, registry record or Production data was touched. Safe to start the tool again. |
+| `outcome-unknown` | the request was sent and no complete answer was read | The account may be deleted, pending (writes blocked, data intact) or untouched. **Do not run the tool again.** Nothing is retried; the account and the registry are read independently. |
+| `after-answer` | the answer was read, verification did not finish | The deletion was answered (as deleted or not). **Do not run the tool again.** Report the PASS/FAIL lines printed so far. |
+
+An interruption while the response body was still arriving counts as `outcome-unknown`, never as an answer.
+
+Signals: Linux/macOS handle SIGINT, SIGTERM and SIGHUP; Windows delivers Ctrl+C (SIGINT), Ctrl+Break
+(SIGBREAK) and a closed console window (SIGHUP). On Windows `Stop-Process`, Task Manager and
+`process.kill(pid, 'SIGTERM')` terminate the process **without** running any handler: no message and no
+summary are produced, and the rule is the same — if the request may have left, do not run the tool again.
+Closing the terminal while the restore drill (gate 10) runs can leave the drill's Docker containers behind;
+check `docker ps` before the next attempt. `pnpm test` exercises the handler with real signals on Linux/macOS
+and real Ctrl+Break on Windows (`tests/ops/deletion-proof-interruption.test.ts`); Ctrl+C is verified there
+only when the test runner's process tree has Ctrl+C enabled, otherwise that test is skipped, not passed.

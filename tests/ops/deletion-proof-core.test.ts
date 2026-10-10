@@ -406,18 +406,13 @@ describe('interruption report (Ctrl+C / termination signal)', () => {
   })
 })
 
-describe('the tool routes every interruption path through the report', () => {
+describe('the tool marks the request answered only when the answer is whole', () => {
+  // How the signals reach describeInterruption is covered in deletion-proof-interruption.test.ts.
   const source = readFileSync(
     join(import.meta.dirname, '../../scripts/restore-gate/owner-deletion-proof.ts'),
     'utf8',
   )
-  it('handles SIGINT/SIGTERM and the raw-mode Ctrl+C byte with describeInterruption', () => {
-    expect(source).toContain('describeInterruption')
-    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) expect(source).toContain(`'${signal}'`)
-    // No bare exit(130) may remain: it was the silent path this report replaces.
-    expect(source).not.toMatch(/process\.exit\(130\)/)
-  })
   it('marks the request answered only once the response body was read', () => {
-    expect(source).toMatch(/state\.requestAnswered = requestCompleted/)
+    expect(source).toMatch(/state.requestAnswered = requestCompleted/)
   })
 })

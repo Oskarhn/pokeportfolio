@@ -50,7 +50,6 @@ import {
   backupFingerprintForRef,
   backupUnfitReasons,
   cleanSecret,
-  describeInterruption,
   evaluateDrillLog,
   explainExportRefusal,
   matchesTestRegistryCredential,
@@ -64,6 +63,11 @@ import {
   resolveTarget,
 } from './deletion-proof-core'
 import { hashAccountId, parseRegistryKey, RegistryError } from './erasure-registry'
+import {
+  createInterruptionHandler,
+  installInterruptionHandlers,
+  interruptionSummary,
+} from './interruption'
 import { exportRegistry } from './registry-export'
 
 const MIN_MIGRATION_ROWS = 114
@@ -98,38 +102,22 @@ const state = {
 } as RunState
 
 /**
- * Ctrl+C at a prompt, SIGINT/SIGTERM/SIGHUP at any other time. This used to be a bare
- * `bare exit call` / the default signal action: no output at all, so once the delete request had
+ * Ctrl+C at a prompt, SIGINT/SIGTERM/SIGHUP/SIGBREAK at any other time. This used to be a bare
+ * process exit (or the default signal action): no output at all, so once the delete request had
  * left the operator could not tell "cancelled, nothing happened" from "cancelled, outcome unknown".
- * Both now say which one it is (describeInterruption) and the summary file records it. Idempotent:
- * a second signal while the report is being written does nothing.
+ * Both now say which one it is (describeInterruption) and the summary file records it. The handler
+ * lives in ./interruption.ts so it can be exercised as a real process without any backend.
  */
-let interrupted = false
-function handleInterruption(): never {
-  if (!interrupted) {
-    interrupted = true
-    const report = describeInterruption(state)
-    process.stderr.write(`\n${report.lines.join('\n')}\n`)
-    if (state.outDir) {
-      try {
-        writeSummary(state.outDir, {
-          stopped: true,
-          interrupted: report.phase,
-          deletionRequestSent: state.requestSent,
-          deleted: state.deleted,
-          results,
-        })
-      } catch {
-        // the console output above is the record
-      }
-    }
-    process.exitCode = report.exitCode
-  }
-  process.exit()
-}
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-  process.on(signal, handleInterruption)
-}
+const handleInterruption = createInterruptionHandler({
+  facts: () => state,
+  writeStderr: (text) => process.stderr.write(text),
+  persist: (report) => {
+    if (!state.outDir) return
+    writeSummary(state.outDir, interruptionSummary(state, report, results))
+  },
+  exit: (code) => process.exit(code),
+})
+installInterruptionHandlers(handleInterruption)
 
 function outsideRepository(path: string): boolean {
   return !resolve(path).toLowerCase().startsWith(resolve(REPO_ROOT).toLowerCase())
