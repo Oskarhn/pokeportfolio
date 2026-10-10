@@ -262,9 +262,15 @@ double credit), so summing every disposal's frozen basis reproduces the lot's ex
 exactly. The identical rule applies to a lot's `lot_cost_adjustments` division (§4.4) when a
 partial disposal must freeze its per-unit share. Full derivation: DATA_MODEL.md §5.7, D-060.
 
-**Snapshot cost basis (D-199).** The historical `DCB(D)` counts, for every lot open on `D`, `qty_open × unit_cost_basis`
-**plus the lot's residual** (the residual is consumed only by the disposal that exhausts the lot, so an open lot always still
-carries all of it). Omitting it understated inventory cost by up to `quantity − 1` minor units per lot.
+**Snapshot cost basis (D-199, D-209).** The historical `DCB(D)` counts, for every lot open on `D`, `qty_open × unit_cost_basis`
+**plus the lot's residual unless a live disposal with `disposed_on ≤ D` carries it**. Omitting it understated inventory cost by up
+to `quantity − 1` minor units per lot.
+
+**Exactly one carrier (D-209).** The residual is frozen into the first *live* disposal that exhausts the lot
+(`lot_disposals.consumed_lot_residual`). If an earlier disposal is voided later, so that units return to the lot while the
+exhausting disposal stays live, the residual stays on that disposal and the lot no longer holds it; a later disposal that
+exhausts the lot again takes none. Voiding the carrier returns the residual to the lot. Summed over the live disposals and
+what is still on the lot, cost is conserved for every valid sequence.
 
 **What if a line has more than one live lot?** (D-129.) A sealed-intent split
 (`set_sealed_lot_intent`, DATA_MODEL.md §5.4) can leave several live `acquisition_lots` rows
@@ -1055,4 +1061,4 @@ Every invariant below has a corresponding automated test. See [TESTING.md](TESTI
 | F14 | A holding with no resolvable market value is excluded from `CMV` and counted in `UHC` — never valued at zero |
 | F15 | Every purchase line's attributable cost is `>= 0` and the lines sum to the receipt total; a discount above the whole receipt is refused, never clipped |
 | F16 | The date of a completed ledger event lies in `[1996-10-20, UTC today + 1]`; an unknown date is never fabricated |
-| F17 | Cost is conserved: for every live known lot, remaining basis + frozen basis on live sale lines = quantity × unit basis + residual; a snapshot's cost basis is the remaining basis of the lots open on its date (D-199) |
+| F17 | Cost is conserved: for every live known lot, remaining basis + frozen basis on live disposals (sale lines and openings) = quantity × unit basis + residual, at every as-of date and after any sequence of voids; a snapshot's cost basis is the remaining basis of the lots open on its date (D-199, D-209) |

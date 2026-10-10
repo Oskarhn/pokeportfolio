@@ -7240,8 +7240,55 @@ against a purchase cost of 501). The error is bounded by the residual (less than
 inexact lot, two sales and an out-of-order void, and no frozen value is wrong — only the *remaining* basis and a later
 exhausting sale's frozen basis. A correct fix needs a design choice (derive the already-carried residual from live frozen bases
 at every consumption site — `create_sale`, `create_opening`, `reconcile_opening_cost`, the snapshot — or refuse the void), so it
-is pinned by `it.fails` in `tests/db/p199_snapshot_cost_basis.test.ts` and recorded as an open policy question. The reconciliation
-suite therefore only voids the latest-created live sale of each lot.
+was pinned by `it.fails` in `tests/db/p199_snapshot_cost_basis.test.ts` until it was fixed by D-209 (P209), which also lets the
+reconciliation suite void any sale.
 
 **Rejected.** Adding the residual to the unit basis (breaks `unit × q` as the per-unit display and the D-060 consumption
 rule); carrying the residual only on the last unit sold in the snapshot (the snapshot replays dates, not creation order).
+
+## D-209 — The lot residual is carried by exactly one live disposal; cost is conserved for arbitrary void sequences (P209)
+
+**2026-10-09 · Accepted**
+
+**Context.** D-060 gives a lot's residual (`R = C − q × floor(C / q)`, plus the adjustment remainder) to "whichever disposal
+reduces `quantity_remaining` to exactly zero", decided and frozen when that disposal is created. The void paths never asked
+the question again, so after an out-of-order void the same minor units sat on a live disposal and on the lot (lot 5 × 100 + 1:
+sell 4, sell 1 [101], void the first: the snapshot read 4 × 100 + 1 = 401 against 501 − 101 = 400), a later exhausting
+disposal froze them a second time (sell 3, sell 2 [201], void the 3, sell 3 [301]: 502), and a backdated exhausting sale left the
+residual on the lot on the days before it. P199 reproduced the first form (seed 1012) and pinned it; P209's seeded
+sale/void sequences (`tests/db/p209_residual_conservation.test.ts`) failed 27 of 47 cases before the fix, across the live
+sale path, openings, `reconcile_opening_cost`, the snapshot, and the `list_opening_sources` preview.
+
+**Decision.** (1) `lot_disposals.consumed_lot_residual` records that a disposal froze the lot's exhaustion residual into its
+basis. (2) A disposal that exhausts a lot takes the residual only when no live disposal of that lot already carries it
+(`create_sale`, `create_opening`, `reconcile_opening_cost`; the lot row is locked, so the check cannot race). (3) The
+residual is therefore on exactly one of: the lot, or one live disposal. Voiding the carrier returns it to the lot (the flag
+lives on the voided row); voiding any other disposal leaves it where it is. (4) The snapshot cost basis of a lot open on day D
+is `qty_open × unit + (residual unless a live carrier has disposed_on ≤ D) + adjustment share`; `list_opening_sources` shows
+an exhaustion residual of 0 for a carried lot so the preview equals what `create_opening` freezes. (5) F17 holds as of every
+day: `DCB(D) = Σ over lots acquired on or before D of (cost − Σ frozen basis of live disposals with disposed_on ≤ D)`, and a lot
+with no unit open on D has contributed exactly its cost.
+
+**Why this and not the alternatives.** *Refuse the void* when it would leave the residual in two places: simple, but it blocks
+a legitimate correction ("I entered the wrong first sale") for a bookkeeping reason the user cannot see. *Re-allocate the residual
+by rewriting the live carrier's frozen basis*: changes a realized result when an unrelated sale is voided, against "frozen
+forever" (prompt §28, D-060). *Derive the carrier from frozen bases at every read* instead of storing a flag: no schema change,
+but every consumer must restate the comparison and a later change to a lot's unit cost would silently change the answer. The
+flag keeps the frozen facts frozen and changes only which side of the ledger the residual is attributed to.
+
+**Compatibility and backfill.** A sequence that never voids out of order produces byte-identical frozen values to before. The
+migration flags existing live disposals whose frozen basis equals exactly the carrier formula (unit + adjustment floor share)
+× quantity + residual + adjustment remainder with residual + remainder > 0; `tests/db/p209_residual_backfill.test.ts` runs
+that statement. Snapshots of users whose lots are affected are queued for rebuild (D-070).
+
+**Open policy question (not decided here).** Legacy data from the second form above (two live disposals both froze the residual)
+has a realized result overstated by up to R on the later disposal. Repairing it means rewriting a frozen value; the read-only
+diagnostic `residual_double_carried_lots` in `scripts/finance-integrity-diagnostics.sql` counts such lots (aggregate only). The
+owner decides per lot whether to leave the frozen result or correct it. Also fixed in the same migration: `list_opening_sources`
+returned `effective_unit_basis_nok_minor` and `exhaustion_residual_nok_minor` as NUMERIC text (`'1.00000000000000000000'`, because
+`sum(bigint)` is numeric), which the client's canonical-integer parser refuses.
+
+**Consequences.** One migration, `20261009160000_p209_residual_conservation.sql` (after the P199/P201 migrations in either
+numbering), `CREATE OR REPLACE` of five functions with unchanged signatures and ACLs plus one column. **Production
+requirement:** the hosted database must receive it after `20261009120000` (P199) — it replaces `rebuild_portfolio_snapshots`
+from that migration. Run `pnpm db:backup` first; no data repair is performed.

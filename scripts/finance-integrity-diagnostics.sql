@@ -32,6 +32,14 @@
 --
 -- P130-02 (JPY FX). Counts of JPY purchases/sales by fx_source; manual-rate rows need owner review.
 --
+-- D-209 (lot cost conservation). A lot's residual rides on exactly one live disposal, or on the lot.
+--   residual_double_carried_lots     live lots where more than one live disposal froze the residual
+--                                    (legacy data from before D-209: sell 3, sell 2, void the 3, sell 3
+--                                    froze it twice; the lot's realized results are overstated by the
+--                                    residual and are NOT repaired automatically - owner decision)
+--   sold_out_lots_cost_not_conserved live known lots with no unit left whose live disposals froze a
+--                                    total different from the lot's cost (units * unit + residual)
+--
 -- Optional consistency (diagnostics only): unsupported currency codes (domain supports NOK, EUR,
 -- USD, GBP, JPY), event dates outside the P144 contract (before 1996-10-20 or after UTC today + 1
 -- day), negative attributable purchase-line costs, and stored money beyond the client's
@@ -252,5 +260,24 @@ select jsonb_build_object(
   'unsafe_integer_money_lots', (
     select count(*) from public.acquisition_lots
     where abs(coalesce(unit_cost_basis_minor, 0)) > 9007199254740991
-       or abs(coalesce(unit_cost_basis_nok_minor, 0)) > 9007199254740991)
+       or abs(coalesce(unit_cost_basis_nok_minor, 0)) > 9007199254740991),
+  'residual_double_carried_lots', (
+    select count(*) from (
+      select ld.lot_id
+      from public.lot_disposals ld
+      join public.acquisition_lots l on l.id = ld.lot_id and l.voided_at is null
+      where ld.voided_at is null and ld.consumed_lot_residual
+      group by ld.lot_id
+      having count(*) > 1) x),
+  'sold_out_lots_cost_not_conserved', (
+    select count(*) from (
+      select l.id
+      from public.acquisition_lots l
+      join public.lot_disposals ld on ld.lot_id = l.id and ld.voided_at is null
+      left join public.sale_lines sl on sl.id = ld.sale_line_id
+      where l.voided_at is null and l.cost_basis_state = 'known' and l.quantity_remaining = 0
+      group by l.id, l.quantity, l.unit_cost_basis_nok_minor, l.residual_nok_minor
+      having bool_and(coalesce(sl.cost_basis_at_sale_nok_minor, ld.cost_basis_at_disposal_nok_minor) is not null)
+         and sum(coalesce(sl.cost_basis_at_sale_nok_minor, ld.cost_basis_at_disposal_nok_minor))
+             <> l.quantity::numeric * l.unit_cost_basis_nok_minor + l.residual_nok_minor) x)
 ) as diagnostics;

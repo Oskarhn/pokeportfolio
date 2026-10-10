@@ -800,6 +800,7 @@ export type Database = {
       }
       lot_disposals: {
         Row: {
+          consumed_lot_residual: boolean
           cost_basis_at_disposal_nok_minor: number | null
           created_at: string
           disposed_on: string
@@ -813,6 +814,7 @@ export type Database = {
           voided_at: string | null
         }
         Insert: {
+          consumed_lot_residual?: boolean
           cost_basis_at_disposal_nok_minor?: number | null
           created_at?: string
           disposed_on: string
@@ -826,6 +828,7 @@ export type Database = {
           voided_at?: string | null
         }
         Update: {
+          consumed_lot_residual?: boolean
           cost_basis_at_disposal_nok_minor?: number | null
           created_at?: string
           disposed_on?: string
