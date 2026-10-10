@@ -94,6 +94,22 @@ export function filterHistoryWindow(
   return points.filter((p) => p.snapshotDate <= to && (from === null || p.snapshotDate >= from))
 }
 
+/**
+ * The change from one value to a later one: an exact bigint difference and a percentage that is
+ * only a display value (one decimal), null when the base is 0 — mathematically undefined, never
+ * "0%" or "∞". The one place a component-level "from → to" change is computed.
+ */
+export function valueChange(
+  fromMinor: bigint,
+  toMinor: bigint,
+): { changeMinor: bigint; pct: number | null } {
+  const changeMinor = toMinor - fromMinor
+  return {
+    changeMinor,
+    pct: fromMinor === 0n ? null : (Number(changeMinor) / Number(fromMinor)) * 100,
+  }
+}
+
 export interface PeriodChange {
   amountMinor: bigint | null
   pct: number | null
@@ -137,14 +153,10 @@ export function computePeriodChange(
     return { amountMinor: null, pct: null, baselineDate: null }
   }
 
-  const latestValue = latest.marketValueMinor ?? 0n
-  const baselineValue = baseline.marketValueMinor ?? 0n
+  const change = valueChange(baseline.marketValueMinor ?? 0n, latest.marketValueMinor ?? 0n)
   return {
-    amountMinor: latestValue - baselineValue,
-    pct:
-      baselineValue === 0n
-        ? null
-        : (Number(latestValue - baselineValue) / Number(baselineValue)) * 100,
+    amountMinor: change.changeMinor,
+    pct: change.pct,
     baselineDate: baseline.snapshotDate,
   }
 }

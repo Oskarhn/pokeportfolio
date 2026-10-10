@@ -13,8 +13,7 @@ import { fetchFxRate, FxRateNotFoundError } from '../../data/fx'
 import { leasedDb } from '../../data/leased-db'
 import { useLeasedMutation } from '../../auth/useLeasedMutation'
 import { toDecimalString } from '../../domain/money'
-import { allocate } from '../../domain/allocation'
-import { suggestFifoOrder } from '../../domain/sales'
+import { previewSale, suggestFifoOrder } from '../../domain/sales'
 import type { CurrencyCode } from '../../domain/currency'
 import { CONDITION_LABEL, GRADER_LABEL, ORIGIN_LABEL } from '../collection/labels'
 import { CardImage } from '../catalog/CardImage'
@@ -295,21 +294,18 @@ export function SaleFormPage() {
       const fees = parseOptionalChargeInput(fields.feesInput, fields.currency)
       const shippingCost = parseOptionalChargeInput(fields.shippingCostInput, fields.currency)
       const shippingCharged = parseOptionalChargeInput(fields.shippingChargedInput, fields.currency)
-      const lineGross: bigint[] = []
+      const lines: { unitGrossMinor: bigint; quantity: number }[] = []
       for (const l of activeLines) {
         const unit = parseNullableMoneyInput(l.unitGrossInput, fields.currency)
         if (unit === null) return null
-        lineGross.push(unit * BigInt(l.quantity))
+        lines.push({ unitGrossMinor: unit, quantity: l.quantity })
       }
-      const gross = lineGross.reduce((a, b) => a + b, 0n)
-      const net = gross - fees - shippingCost + shippingCharged
-      const allocFees = allocate(fees, lineGross)
-      const allocShip = allocate(shippingCost, lineGross)
-      const allocShipCharged = allocate(shippingCharged, lineGross)
-      const lineNet = lineGross.map(
-        (g, i) => g - (allocFees[i] ?? 0n) - (allocShip[i] ?? 0n) + (allocShipCharged[i] ?? 0n),
-      )
-      return { gross, fees, shippingCost, shippingCharged, net, lineNet }
+      return previewSale({
+        lines,
+        feesMinor: fees,
+        shippingCostMinor: shippingCost,
+        shippingChargedMinor: shippingCharged,
+      })
     } catch {
       return null
     }
@@ -569,22 +565,22 @@ export function SaleFormPage() {
 
       {preview ? (
         <div className="space-y-1 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-sm">
-          <Row label="Gross sale price" value={preview.gross} currency={fields.currency} />
-          <Row label="Fees" value={-preview.fees} currency={fields.currency} />
+          <Row label="Gross sale price" value={preview.grossMinor} currency={fields.currency} />
+          <Row label="Fees" value={preview.feesDeductionMinor} currency={fields.currency} />
           <Row
             label="Your shipping cost"
-            value={-preview.shippingCost}
+            value={preview.shippingCostDeductionMinor}
             currency={fields.currency}
           />
           <Row
             label="Shipping paid by buyer"
-            value={preview.shippingCharged}
+            value={preview.shippingChargedMinor}
             currency={fields.currency}
           />
           <div className="flex justify-between border-t border-slate-800 pt-2 font-semibold text-slate-100">
             <span>Net proceeds</span>
             <span>
-              {toDecimalString({ minorUnits: preview.net, currency: fields.currency })}{' '}
+              {toDecimalString({ minorUnits: preview.netMinor, currency: fields.currency })}{' '}
               {fields.currency}
             </span>
           </div>

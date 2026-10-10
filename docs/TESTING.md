@@ -1650,3 +1650,6 @@ assertion message carries the operation log of that seed.
   beyond one day, JPY exponent 0 and frozen NOK), and POLICY pins for the open questions (sale before acquisition, future-dated
   manual valuation). The month-rollover case needs the database date to be the last day of a month and otherwise asserts the
   refusal path; `tests/data/monthly-spend-local-date.test.ts` covers the client sending the local date at 00:30 on the 1st.
+- `tests/financial/previews.test.ts` and `tests/db/p209_preview_parity.test.ts` — D-213: the model's worked examples for
+  `previewSale`, `previewPurchase` and `valueChange` (largest-remainder allocation, negative nets, > 2^53, zero base), and
+  seeded parity between the previews and the rows the RPCs store.

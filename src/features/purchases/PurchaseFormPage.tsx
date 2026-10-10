@@ -8,7 +8,7 @@ import { useLeasedAction, useLeasedMutation } from '../../auth/useLeasedMutation
 import { createRetailer, listRetailers } from '../../data/retailers'
 import { fetchFxRate, FxRateNotFoundError } from '../../data/fx'
 import { fromDecimalString, toDecimalString } from '../../domain/money'
-import { allocatePurchaseCharges } from '../../domain/allocation'
+import { previewPurchase } from '../../domain/allocation'
 import type { CurrencyCode } from '../../domain/currency'
 import { Button, FormMessage, SelectField, TextField } from '../../ui/form'
 import {
@@ -165,14 +165,20 @@ export function PurchaseFormPage() {
       const shipping = parseOptionalChargeInput(shippingInput, currency)
       const customs = parseOptionalChargeInput(customsInput, currency)
       const discount = parseOptionalChargeInput(discountInput, currency)
-      const lineTotals: bigint[] = []
+      const previewLines: { unitPriceMinor: bigint; quantity: number }[] = []
       for (const line of lines) {
-        const qty = BigInt(Math.max(1, Number.parseInt(line.quantity || '1', 10)))
+        const quantity = Math.max(1, Number.parseInt(line.quantity || '1', 10))
         const unit = parseNullableMoneyInput(line.unitPrice, currency)
         if (unit === null) return null
-        lineTotals.push(unit * qty)
+        previewLines.push({ unitPriceMinor: unit, quantity })
       }
-      const charges = allocatePurchaseCharges(lineTotals, shipping, customs, discount)
+      const charges = previewPurchase({
+        lines: previewLines,
+        shippingMinor: shipping,
+        customsMinor: customs,
+        discountMinor: discount,
+      })
+      const lineTotals = charges.lineTotals
       const previews = lines.map((line, index) => {
         const lineTotal = at(lineTotals, index)
         const allocatedShipping = at(charges.shipping, index)
@@ -192,9 +198,7 @@ export function PurchaseFormPage() {
           attributable: at(charges.attributable, index),
         }
       })
-      const subtotal = lineTotals.reduce((a, b) => a + b, 0n)
-      const total = subtotal + shipping + customs - discount
-      return { lines: previews, shipping, customs, discount, total }
+      return { lines: previews, shipping, customs, discount, total: charges.totalMinor }
     } catch {
       return null
     }

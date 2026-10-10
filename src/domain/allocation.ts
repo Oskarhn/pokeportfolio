@@ -192,3 +192,40 @@ export function allocatePurchaseCharges(
 export function sumShares(currency: CurrencyCode, shares: readonly Money[]): Money {
   return shares.reduce((acc, share) => add(acc, share), fromMinorUnits(0n, currency))
 }
+
+export interface PurchasePreviewInput {
+  /** One entry per receipt line: unit price in minor units and the integer quantity (>= 1). */
+  readonly lines: readonly { readonly unitPriceMinor: bigint; readonly quantity: number }[]
+  readonly shippingMinor: bigint
+  readonly customsMinor: bigint
+  readonly discountMinor: bigint
+}
+
+export interface PurchasePreview extends PurchaseChargeAllocation {
+  readonly lineTotals: bigint[]
+  readonly subtotalMinor: bigint
+  /** subtotal + shipping + customs − discount: the amount paid. */
+  readonly totalMinor: bigint
+}
+
+/**
+ * The purchase forms' live preview (record and edit): line totals, the allocation of shipping,
+ * customs and discount (§4.1, {@link allocatePurchaseCharges}) and the receipt total. Throws the
+ * same `AllocationError` as the SQL for a discount larger than the whole receipt.
+ */
+export function previewPurchase(input: PurchasePreviewInput): PurchasePreview {
+  const lineTotals = input.lines.map((l) => l.unitPriceMinor * BigInt(l.quantity))
+  const charges = allocatePurchaseCharges(
+    lineTotals,
+    input.shippingMinor,
+    input.customsMinor,
+    input.discountMinor,
+  )
+  const subtotalMinor = lineTotals.reduce((a, b) => a + b, 0n)
+  return {
+    ...charges,
+    lineTotals,
+    subtotalMinor,
+    totalMinor: subtotalMinor + input.shippingMinor + input.customsMinor - input.discountMinor,
+  }
+}
